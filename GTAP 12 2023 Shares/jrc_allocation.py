@@ -642,9 +642,9 @@ def allocate_oecd_aea_emissions(
     """
     Allocate OECD AEA D35 emissions to 11 GTAP generating activities.
 
-    JRC net-generation shares determine each broad technology group's share.
-    GTAP GDX emissions determine only the base/peak split within gas, oil and
-    hydro. CO2 and non-CO2 use their respective GTAP emission accounts.
+    JRC fuel-specific fossil CO2 and generation fuel-input shares determine
+    broad technology-group shares. GTAP GDX emissions determine base/peak
+    splits within gas, oil and hydro, separately for CO2 and non-CO2.
     """
     # CO2 allocation uses JRC's fuel-specific fossil CO2 emissions from
     # power plants plus heat-only plants. Non-CO2 allocation uses JRC fuel
