@@ -221,6 +221,7 @@ def _gams_symbol_activity_totals(
     symbol_names: list[str],
     country_code: str,
     system_directory: str,
+    gwp_ar6: dict[str, float] | None = None,
 ) -> pd.Series:
     """Read activity totals from GTAP GDX symbols using the GAMS Python API."""
     from gams import GamsWorkspace
@@ -251,7 +252,15 @@ def _gams_symbol_activity_totals(
             else:
                 continue
             if region == country_code and activity in totals.index:
-                totals.loc[activity] += float(record.value)
+                value = float(record.value)
+                if len(keys) == 4 and gwp_ar6 is not None:
+                    gas = keys[0]
+                    if gas.upper() == "CO2":
+                        continue
+                    if gas not in gwp_ar6:
+                        raise KeyError(f"Missing AR6 GWP for GTAP gas {gas!r} in {gdx_path}.")
+                    value *= gwp_ar6[gas]
+                totals.loc[activity] += value
 
     if not found:
         raise KeyError(
@@ -262,27 +271,47 @@ def _gams_symbol_activity_totals(
     return totals
 
 
+def _load_gwp_ar6(nonco2_gdx: Path, country_code: str, system_directory: str) -> dict[str, float]:
+    """Read country-specific AR6 global-warming potentials from the NCO2 GDX."""
+    from gams import GamsWorkspace
+
+    workspace = GamsWorkspace(system_directory=system_directory)
+    database = workspace.add_database_from_gdx(str(Path(nonco2_gdx)))
+    symbols = {str(symbol.name).upper(): symbol for symbol in database}
+    symbol = symbols.get("GWP")
+    if symbol is None:
+        raise KeyError(f"GWP symbol not found in {nonco2_gdx}.")
+    result = {}
+    for record in symbol:
+        keys = tuple(str(key) for key in record.keys)
+        if len(keys) == 3 and keys[1] == country_code and keys[2].upper() == "AR6":
+            result[keys[0]] = float(record.value)
+    if not result:
+        raise ValueError(f"No country-specific AR6 GWP records found for {country_code}.")
+    return result
+
+
 def load_gtap_emissions_weights(
     co2_gdx: Path,
     nonco2_gdx: Path,
     country_code: str,
-    system_directory: str = r"C:\GAMS\51",
+    system_directory: str = r"C:\\GAMS\\51",
 ) -> tuple[pd.Series, pd.Series]:
     """
     Return GTAP activity emission totals for CO2 and non-CO2.
 
     CO2 uses MDF and MMF (domestic/imported fuel combustion accounts).
-    Non-CO2 uses EMI_IO (gas x fuel x activity x region), avoiding the
-    separate endowment, output, household and land-use accounts.
+    Non-CO2 uses EMI_IO, excludes CO2, and converts remaining gases to
+    CO2-equivalent using country-specific AR6 GWP records.
     """
     co2 = _gams_symbol_activity_totals(
         co2_gdx, ["MDF", "MMF"], country_code, system_directory
     )
+    gwp_ar6 = _load_gwp_ar6(nonco2_gdx, country_code, system_directory)
     nonco2 = _gams_symbol_activity_totals(
-        nonco2_gdx, ["EMI_IO"], country_code, system_directory
+        nonco2_gdx, ["EMI_IO"], country_code, system_directory, gwp_ar6=gwp_ar6
     )
     return co2, nonco2
-
 
 def _aea_value_for_pollutant(
     table: pd.DataFrame,
