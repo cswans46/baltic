@@ -57,6 +57,11 @@ def parse_args(args=None):
         help="Filename pattern for the country-specific JRC-IDEES PowerGen workbook.",
     )
     parser.add_argument(
+        "--jrc_emission_balance_pattern",
+        default="*EmissionBalance*.xlsx",
+        help="Filename pattern for the country-specific JRC-IDEES EmissionBalance workbook.",
+    )
+    parser.add_argument(
         "--aea_emissions_pattern",
         default="OECD {country} 2022 emissions.xlsx",
         help="Filename pattern for the country-specific OECD AEA workbook.",
@@ -1278,6 +1283,9 @@ def main(args=None):
         powergen_workbook = find_country_workbook(
             root, country, parsed_args.jrc_powergen_pattern
         )
+        emission_balance_workbook = find_country_workbook(
+            root, country, parsed_args.jrc_emission_balance_pattern
+        )
         aea_workbook = find_country_workbook(
             root, country, parsed_args.aea_emissions_pattern.format(country=country)
         )
@@ -1302,6 +1310,7 @@ def main(args=None):
             aea_workbook,
             co2_gtap,
             nonco2_gtap,
+            emission_balance_workbook=emission_balance_workbook,
             year=2023,
             country_code=country_code,
         )
