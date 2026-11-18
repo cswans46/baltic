@@ -89,6 +89,7 @@ def load_jrc_generation_groups(
     powergen_workbook: Path,
     year: int = 2023,
     country_code: str = "EST",
+    include_heat: bool = False,
 ) -> pd.Series:
     """
     Read net electricity generation from JRC-IDEES PowerGen.
@@ -97,7 +98,10 @@ def load_jrc_generation_groups(
     from the aggregate Thermal sheet, which includes electricity-only and CHP
     plants. Wind, solar, hydro and nuclear are taken from OverviewPG.
     Pumped storage is excluded, consistently with the JRC net-generation
-    total that excludes pumped storage.
+    total that excludes pumped storage. If include_heat=True, also add CHP
+    heat output and heat-only plant output, grouped by fuel. This is the
+    appropriate basis for allocating OECD D35 emissions, which also covers
+    steam and district-heat supply.
     """
     powergen_workbook = Path(powergen_workbook)
     thermal = pd.read_excel(powergen_workbook, sheet_name="Thermal", header=None)
@@ -131,6 +135,35 @@ def load_jrc_generation_groups(
         "hydro": overview_values.get(f"GenNetElc.GWh.{iso2}.PG.Hydro", 0.0),
         "nuclear": overview_values.get(f"GenNetElc.GWh.{iso2}.PG.Nuclear", 0.0),
     }
+
+    if include_heat:
+        # Add CHP heat output and heat-only plant output. The former is
+        # reported on the Thermal sheet; the latter on the DistHeat sheet.
+        chp_prefix = f"GenStm_CHP.GWh.{iso2}.PG.ConvThermal.CHP."
+        chp_heat = {
+            code[len(chp_prefix):]: value
+            for code, value in thermal_values.items()
+            if code.startswith(chp_prefix)
+        }
+        distheat = pd.read_excel(powergen_workbook, sheet_name="DistHeat", header=None)
+        distheat_values = _jrc_code_values(distheat, year)
+        dh_prefix = f"GenStm.GWh.{iso2}.DH.ConvThermal."
+        dh_heat = {
+            code[len(dh_prefix):]: value
+            for code, value in distheat_values.items()
+            if code.startswith(dh_prefix)
+        }
+
+        groups["coal"] += sum(chp_heat.get(k, 0.0) for k in ("Coal", "Lignite"))
+        groups["gas"] += sum(chp_heat.get(k, 0.0) for k in ("Gas", "Biogas", "DerivedGas", "RefineryGas"))
+        groups["oil"] += sum(chp_heat.get(k, 0.0) for k in ("Diesel", "FuelOil"))
+        groups["other"] += sum(chp_heat.get(k, 0.0) for k in ("BiomassWaste", "Waste"))
+
+        groups["coal"] += sum(dh_heat.get(k, 0.0) for k in ("EFCoal", "EFLignite"))
+        groups["gas"] += sum(dh_heat.get(k, 0.0) for k in ("EFGas", "EFBiogas", "EFDerivedGas"))
+        groups["oil"] += sum(dh_heat.get(k, 0.0) for k in ("EFDiesel", "EFFuelOil"))
+        groups["other"] += sum(dh_heat.get(k, 0.0) for k in ("EFWoodWaste", "EFWasteNR"))
+
     result = pd.Series(groups, dtype=float)
     if not np.isfinite(result.to_numpy()).all() or (result < 0).any():
         raise ValueError(f"Invalid JRC net-generation values in {powergen_workbook}.")
@@ -397,7 +430,9 @@ def allocate_oecd_aea_emissions(
     GTAP GDX emissions determine only the base/peak split within gas, oil and
     hydro. CO2 and non-CO2 use their respective GTAP emission accounts.
     """
-    groups = load_jrc_generation_groups(powergen_workbook, year, country_code)
+    groups = load_jrc_generation_groups(
+        powergen_workbook, year, country_code, include_heat=True
+    )
     group_shares = groups / groups.sum()
 
     co2_shares = _split_group_shares(group_shares, co2_gtap_totals)
