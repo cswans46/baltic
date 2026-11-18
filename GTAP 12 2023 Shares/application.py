@@ -18,6 +18,7 @@ from jrc_allocation import (
     build_jrc_output_shares,
     find_country_workbook,
     load_gtap_emissions_weights,
+    GTAP_GENERATING_ACTIVITIES,
 )
 
 COUNTRY_CODES = {
@@ -263,18 +264,24 @@ def disaggregate_electricity(
 
     # ---- Supply-side mix ----------------------------------------------------
     R = R.reindex(columns=sector_cols)
-    mix = R.mul(dom[sector_cols], axis=1).sum(axis=1)
-    mix = mix / mix.sum()                       # GTAP economy-wide fallback mix
 
-    # JRC-IDEES net generation shares provide an independent 2023 allocation
-    # for final demand and fallback cells. Purchaser-specific intermediate
-    # supply shares (R) remain based on GTAP VDFB data.
+    # Preserve the GTAP split between electricity generation and the
+    # non-generating activities (T&D and gas/steam distribution), but use
+    # JRC-IDEES 2023 net generation shares to split the generating portion
+    # across the 11 GTAP generation technologies.
     if jrc_output_shares is not None:
-        jrc_mix = pd.Series(0.0, index=ACTIVITIES, dtype=float)
+        jrc_mix = pd.Series(0.0, index=GTAP_GENERATING_ACTIVITIES, dtype=float)
         jrc_mix.loc[jrc_output_shares.index] = jrc_output_shares.astype(float)
         if (jrc_mix < 0).any() or not np.isclose(jrc_mix.sum(), 1.0, atol=1e-9):
-            raise ValueError(f"{country}: JRC output shares must be non-negative and sum to one.")
-        mix = jrc_mix
+            raise ValueError(f"{country}: JRC generation shares must be non-negative and sum to one.")
+        generation_total = R.loc[GTAP_GENERATING_ACTIVITIES].sum(axis=0)
+        R.loc[GTAP_GENERATING_ACTIVITIES, :] = np.outer(
+            jrc_mix.to_numpy(),
+            generation_total.to_numpy(),
+        )
+
+    mix = R.mul(dom[sector_cols], axis=1).sum(axis=1)
+    mix = mix / mix.sum()                       # economy-wide technology mix
 
     # ---- Which technologies to keep ------------------------------------------
     active = (L.sum() + E.sum() > 0) | (mix > 0)
