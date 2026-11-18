@@ -30,7 +30,7 @@ Paths and workbook filename patterns can be overridden using the command-line ar
 ### OECD D35 emissions allocation
 
 - **CO2:** fuel-specific JRC CO2 emissions from conventional thermal power plants plus heat-only plants determine broad fuel-group shares. Biomass CO2 is excluded, consistent with the OECD AEA GHG account. GTAP MDF and MMF records split gas, oil and hydro between base and peak activities.
-- **Non-CO2:** JRC combined electricity, CHP heat and heat-only output by fuel provides the broad-group shares. GTAP EMI_IO records are converted to CO2-equivalent using the country-specific GWP symbol for AR6; CO2 is excluded from this account. These GTAP values split gas, oil and hydro base/peak activities.
+- **Non-CO2:** JRC fuel inputs to conventional thermal power plants plus heat-only plants provide the broad-group shares. The detailed fuel-input records are grouped into coal, gas, oil and other (biomass / waste); wind, solar, hydro and nuclear receive no direct combustion share. GTAP EMI_IO records are converted to CO2-equivalent using the country-specific GWP symbol for AR6; CO2 is excluded from this account. These GTAP values split gas, oil and hydro base/peak activities.
 - The resulting activity allocations are scaled to the OECD AEA D35 CO2 and non-CO2 totals separately. The script checks that both totals are conserved.
 
 The JRC PowerGen CO2 fuel totals are cross-checked against TI_EHG_E in the EmissionBalance workbook before emissions are allocated.
