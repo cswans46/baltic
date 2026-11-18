@@ -139,10 +139,14 @@ def load_jrc_generation_groups(
     if include_heat:
         # Add CHP heat output and heat-only plant output. The former is
         # reported on the Thermal sheet; the latter on the DistHeat sheet.
+        chp_frame = pd.read_excel(
+            powergen_workbook, sheet_name="Thermal_CHP", header=None
+        )
+        chp_values = _jrc_code_values(chp_frame, year)
         chp_prefix = f"GenStm_CHP.GWh.{iso2}.PG.ConvThermal.CHP."
         chp_heat = {
             code[len(chp_prefix):]: value
-            for code, value in thermal_values.items()
+            for code, value in chp_values.items()
             if code.startswith(chp_prefix)
         }
         distheat = pd.read_excel(powergen_workbook, sheet_name="DistHeat", header=None)
