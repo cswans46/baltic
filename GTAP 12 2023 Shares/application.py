@@ -62,17 +62,17 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--co2_gdx",
-        default=r"..\\GDX12aPower23\\GSDFEMISS.GDX",
+        default=r"..\GDX12aPower23\GSDFEMISS.GDX",
         help="GTAP CO2 emissions GDX file.",
     )
     parser.add_argument(
         "--nonco2_gdx",
-        default=r"..\\GDX12aPower23\\GSDFNCO2.GDX",
+        default=r"..\GDX12aPower23\GSDFNCO2.GDX",
         help="GTAP non-CO2 emissions GDX file.",
     )
     parser.add_argument(
         "--gams_system_directory",
-        default=r"C:\\GAMS\\51",
+        default=r"C:\GAMS\51",
         help="GAMS system directory used to read GTAP GDX files.",
     )
 
