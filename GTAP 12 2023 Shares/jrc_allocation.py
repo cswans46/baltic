@@ -213,30 +213,33 @@ def load_jrc_fuel_input_groups(
 
     groups = {
         "coal": (
-            thermal_inputs.get("Coal", 0.0)
-            + thermal_inputs.get("Lignite", 0.0)
+            thermal_inputs.get("EFCoal", 0.0)
+            + thermal_inputs.get("EFLignite", 0.0)
             + heat_inputs.get("EFCoal", 0.0)
             + heat_inputs.get("EFLignite", 0.0)
         ),
         "gas": (
-            thermal_inputs.get("Gas", 0.0)
-            + thermal_inputs.get("Biogas", 0.0)
-            + thermal_inputs.get("DerivedGas", 0.0)
-            + thermal_inputs.get("RefineryGas", 0.0)
-            + heat_inputs.get("EFGas", 0.0)
+            thermal_inputs.get("EFNaturalGas", 0.0)
+            + thermal_inputs.get("EFBiogas", 0.0)
+            + thermal_inputs.get("EFDerivedGas", 0.0)
+            + thermal_inputs.get("EFRefineryGas", 0.0)
+            + heat_inputs.get("EFGas.EFNaturalGas", 0.0)
+            + heat_inputs.get("EFGas.EFBiogas", 0.0)
             + heat_inputs.get("EFDerivedGas", 0.0)
             + heat_inputs.get("EFRefineryGas", 0.0)
         ),
         "oil": (
-            thermal_inputs.get("Diesel", 0.0)
-            + thermal_inputs.get("FuelOil", 0.0)
+            thermal_inputs.get("EFDiesel", 0.0)
+            + thermal_inputs.get("EFFuelOil", 0.0)
             + heat_inputs.get("EFDiesel", 0.0)
             + heat_inputs.get("EFFuelOil", 0.0)
         ),
         "other": (
-            thermal_inputs.get("BiomassWaste", 0.0)
-            + thermal_inputs.get("Waste", 0.0)
-            + heat_inputs.get("EFWoodWaste", 0.0)
+            thermal_inputs.get("EFWood", 0.0)
+            + thermal_inputs.get("EFMSWRen", 0.0)
+            + thermal_inputs.get("EFWasteNR", 0.0)
+            + heat_inputs.get("EFWoodWaste.EFWood", 0.0)
+            + heat_inputs.get("EFWoodWaste.EFMSWRen", 0.0)
             + heat_inputs.get("EFWasteNR", 0.0)
         ),
         "wind": 0.0,
