@@ -108,7 +108,7 @@ def load_jrc_generation_groups(
     if country_code not in JRC_ISO2:
         raise KeyError(f"Unsupported GTAP country code: {country_code}")
     iso2 = JRC_ISO2[country_code]
-    thermal_prefix = f"GenNetElc.GWh.{iso2}.PG.ConvThermal.All."
+    thermal_prefix = ff"GenNetElc.GWh.{iso2}.PG.ConvThermal.All."
     fuel_values = {
         code[len(thermal_prefix):]: value
         for code, value in thermal_values.items()
@@ -123,13 +123,13 @@ def load_jrc_generation_groups(
         "gas": fuel("Gas", "Biogas", "DerivedGas", "RefineryGas"),
         "oil": fuel("Diesel", "FuelOil"),
         "other": fuel("BiomassWaste", "Waste"),
-        "wind": overview_values.get("GenNetElc.GWh.{iso2}.PG.Wind", 0.0),
+        "wind": overview_values.get(f"GenNetElc.GWh.{iso2}.PG.Wind", 0.0),
         "solar": (
-            overview_values.get("GenNetElc.GWh.{iso2}.PG.SolarPV", 0.0)
-            + overview_values.get("GenNetElc.GWh.{iso2}.PG.SolarThermal", 0.0)
+            overview_values.get(f"GenNetElc.GWh.{iso2}.PG.SolarPV", 0.0)
+            + overview_values.get(f"GenNetElc.GWh.{iso2}.PG.SolarThermal", 0.0)
         ),
-        "hydro": overview_values.get("GenNetElc.GWh.{iso2}.PG.Hydro", 0.0),
-        "nuclear": overview_values.get("GenNetElc.GWh.{iso2}.PG.Nuclear", 0.0),
+        "hydro": overview_values.get(f"GenNetElc.GWh.{iso2}.PG.Hydro", 0.0),
+        "nuclear": overview_values.get(f"GenNetElc.GWh.{iso2}.PG.Nuclear", 0.0),
     }
     result = pd.Series(groups, dtype=float)
     if not np.isfinite(result.to_numpy()).all() or (result < 0).any():
