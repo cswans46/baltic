@@ -33,21 +33,23 @@ def find_country_workbook(root: Path, country: str, pattern: str) -> Path:
     """Find one country-specific workbook below the country's data folder."""
     country_root = Path(root) / country
     matches = sorted(country_root.rglob(pattern))
+
     if not matches:
         raise FileNotFoundError(
             f"No workbook matching {pattern!r} found below {country_root}"
         )
+
     if len(matches) > 1:
-        preferred = [
-            p for p in matches
-            if "3. Emissions" in p.parts
-        ]
-        if len(preferred) == 1:
-            return preferred[0]
+        if "EmissionBalance" in pattern or "emission" in pattern.lower():
+            preferred = [p for p in matches if "3. Emissions" in p.parts]
+            if len(preferred) == 1:
+                return preferred[0]
+
         raise ValueError(
             f"Multiple workbooks match {pattern!r} below {country_root}: "
             + ", ".join(str(p) for p in matches)
         )
+
     return matches[0]
 
 
@@ -112,7 +114,7 @@ def load_jrc_generation_groups(
     if country_code not in JRC_ISO2:
         raise KeyError(f"Unsupported GTAP country code: {country_code}")
     iso2 = JRC_ISO2[country_code]
-    thermal_prefix = ff"GenNetElc.GWh.{iso2}.PG.ConvThermal.All."
+    thermal_prefix = f"GenNetElc.GWh.{iso2}.PG.ConvThermal.All."
     fuel_values = {
         code[len(thermal_prefix):]: value
         for code, value in thermal_values.items()
@@ -469,7 +471,7 @@ def _gams_symbol_activity_totals(
     symbol_names: list[str],
     country_code: str,
     system_directory: str,
-    gwp_ar6: dict[str, float] | None = None,
+    gwp_ar5: dict[str, float] | None = None,
 ) -> pd.Series:
     """Read activity totals from GTAP GDX symbols using the GAMS Python API."""
     from gams import GamsWorkspace
@@ -501,13 +503,17 @@ def _gams_symbol_activity_totals(
                 continue
             if region == country_code and activity in totals.index:
                 value = float(record.value)
-                if len(keys) == 4 and gwp_ar6 is not None:
+                if len(keys) == 4 and gwp_ar5 is not None:
                     gas = keys[0]
                     if gas.upper() == "CO2":
                         continue
-                    if gas not in gwp_ar6:
-                        raise KeyError(f"Missing AR6 GWP for GTAP gas {gas!r} in {gdx_path}.")
-                    value *= gwp_ar6[gas]
+                    # Black carbon, carbon monoxide do not have a standard AR5/ar5 100-year GWP.
+                    if gas not in gwp_ar5:
+                        continue
+
+                    if gas not in gwp_ar5:
+                        raise KeyError(f"Missing GWP for GTAP gas {gas!r} in {gdx_path}.")
+                    value *= gwp_ar5[gas]
                 totals.loc[activity] += value
 
     if not found:
@@ -519,23 +525,43 @@ def _gams_symbol_activity_totals(
     return totals
 
 
-def _load_gwp_ar6(nonco2_gdx: Path, country_code: str, system_directory: str) -> dict[str, float]:
-    """Read country-specific AR6 global-warming potentials from the NCO2 GDX."""
+def _load_gwp_ar5(
+    nonco2_gdx: Path,
+    country_code: str,
+    system_directory: str,
+) -> dict[str, float]:
+    """Load country-specific GWP values, using AR5 for Latvia and ar5 otherwise."""
     from gams import GamsWorkspace
 
     workspace = GamsWorkspace(system_directory=system_directory)
     database = workspace.add_database_from_gdx(str(Path(nonco2_gdx)))
     symbols = {str(symbol.name).upper(): symbol for symbol in database}
+
     symbol = symbols.get("GWP")
     if symbol is None:
         raise KeyError(f"GWP symbol not found in {nonco2_gdx}.")
+
+    assessment = "AR5"
+
     result = {}
+
     for record in symbol:
         keys = tuple(str(key) for key in record.keys)
-        if len(keys) == 3 and keys[1] == country_code and keys[2].upper() == "AR6":
+
+        if (
+            len(keys) == 3
+            and keys[1] == country_code
+            and keys[2].upper() == assessment
+        ):
             result[keys[0]] = float(record.value)
+
     if not result:
-        raise ValueError(f"No country-specific AR6 GWP records found for {country_code}.")
+        raise ValueError(
+            f"No country-specific {assessment} GWP records found for {country_code}."
+        )
+
+    print(f"{country_code}: using {assessment} GWP values ({len(result)} gases).")
+
     return result
 
 
@@ -550,14 +576,14 @@ def load_gtap_emissions_weights(
 
     CO2 uses MDF and MMF (domestic/imported fuel combustion accounts).
     Non-CO2 uses EMI_IO, excludes CO2, and converts remaining gases to
-    CO2-equivalent using country-specific AR6 GWP records.
+    CO2-equivalent using country-specific ar5 GWP records.
     """
     co2 = _gams_symbol_activity_totals(
         co2_gdx, ["MDF", "MMF"], country_code, system_directory
     )
-    gwp_ar6 = _load_gwp_ar6(nonco2_gdx, country_code, system_directory)
+    gwp_ar5 = _load_gwp_ar5(nonco2_gdx, country_code, system_directory)
     nonco2 = _gams_symbol_activity_totals(
-        nonco2_gdx, ["EMI_IO"], country_code, system_directory, gwp_ar6=gwp_ar6
+        nonco2_gdx, ["EMI_IO"], country_code, system_directory, gwp_ar5=gwp_ar5
     )
     return co2, nonco2
 
@@ -630,6 +656,7 @@ def load_oecd_aea_d35_emissions(
     return co2, max(nonco2, 0.0)
 
 
+
 def allocate_oecd_aea_emissions(
     powergen_workbook: Path,
     aea_workbook: Path,
@@ -640,79 +667,136 @@ def allocate_oecd_aea_emissions(
     country_code: str = "EST",
 ) -> pd.DataFrame:
     """
-    Allocate OECD AEA D35 emissions to 11 GTAP generating activities.
+    Allocate OECD AEA D35 emissions to the 11 GTAP generating activities.
 
-    JRC fuel-specific fossil CO2 and generation fuel-input shares determine
-    broad technology-group shares. GTAP GDX emissions determine base/peak
-    splits within gas, oil and hydro, separately for CO2 and non-CO2.
+    CO2 allocation:
+        JRC EmissionBalance fuel-specific CO2 shares, with GTAP emissions
+        used to split gas, oil and hydro between base and peak activities.
+
+    Non-CO2 allocation:
+        GTAP EMI_IO emissions converted to CO2-equivalent using AR5 GWPs,
+        directly determine activity-level allocation shares.
+
+    OECD AEA provides the emissions totals in both cases.
     """
-    # CO2 allocation uses JRC's fuel-specific fossil CO2 emissions from
-    # power plants plus heat-only plants. Non-CO2 allocation uses JRC fuel
-    # inputs to electricity and heat generation as a combustion-based proxy.
-    co2_groups = load_jrc_co2_emission_groups(
-        powergen_workbook, year, country_code
-    )
-    co2_group_shares = co2_groups / co2_groups.sum()
-    fuel_input_groups = load_jrc_fuel_input_groups(
-        powergen_workbook, year, country_code
-    )
-    fuel_input_group_shares = fuel_input_groups / fuel_input_groups.sum()
-
-    jrc_co2_powergen_total = np.nan
-    jrc_co2_balance_total = np.nan
-    if emission_balance_workbook is not None:
-        jrc_co2_powergen_total, jrc_co2_balance_total = validate_jrc_co2_emissions(
-            powergen_workbook,
-            emission_balance_workbook,
-            year=year,
-            country_code=country_code,
+    if emission_balance_workbook is None:
+        raise ValueError(
+            "An EmissionBalance workbook is required for CO2 allocation."
         )
 
-    co2_shares = _split_group_shares(co2_group_shares, co2_gtap_totals)
-    nonco2_shares = _split_group_shares(fuel_input_group_shares, nonco2_gtap_totals)
+    # ---------------------------------------------------------
+    # 1. CO2 allocation shares from JRC EmissionBalance
+    # ---------------------------------------------------------
+    co2_groups = load_jrc_emission_balance_co2_groups(
+        emission_balance_workbook,
+        year=year,
+        country_code=country_code,
+    )
+
+    co2_group_total = float(co2_groups.sum())
+    if not np.isfinite(co2_group_total) or co2_group_total <= 0:
+        raise ValueError(
+            f"Invalid JRC EmissionBalance CO2 total for {country_code}."
+        )
+
+    co2_group_shares = co2_groups / co2_group_total
+
+    # Split broad fuel groups into GTAP base/peak activities.
+    co2_shares = _split_group_shares(
+        co2_group_shares,
+        co2_gtap_totals,
+    )
+
+    # ---------------------------------------------------------
+    # 2. Non-CO2 allocation shares directly from GTAP
+    # ---------------------------------------------------------
+    nonco2_gtap_totals = (
+        nonco2_gtap_totals
+        .reindex(GTAP_GENERATING_ACTIVITIES)
+        .fillna(0.0)
+    )
+
+    nonco2_gtap_total = float(nonco2_gtap_totals.sum())
+
+    if not np.isfinite(nonco2_gtap_total) or nonco2_gtap_total <= 0:
+        raise ValueError(
+            f"Invalid GTAP non-CO2 emissions total for {country_code}."
+        )
+
+    nonco2_shares = nonco2_gtap_totals / nonco2_gtap_total
+
+    # ---------------------------------------------------------
+    # 3. OECD AEA emissions totals
+    # ---------------------------------------------------------
     co2_total, nonco2_total = load_oecd_aea_d35_emissions(aea_workbook)
+
+    # ---------------------------------------------------------
+    # 4. Construct allocation results
+    # ---------------------------------------------------------
+    activity_groups = {
+        "NuclearBL": "nuclear",
+        "CoalBL": "coal",
+        "WindBL": "wind",
+        "SolarP": "solar",
+        "OtherBL": "other",
+        "GasBL": "gas",
+        "GasP": "gas",
+        "HydroBL": "hydro",
+        "HydroP": "hydro",
+        "OilBL": "oil",
+        "OilP": "oil",
+    }
 
     result = pd.DataFrame(index=GTAP_GENERATING_ACTIVITIES)
     result.index.name = "GTAP_activity"
-    result["JRC_group"] = [
-        next(
-            (group for group, pair in SPLIT_GROUPS.items() if activity in pair),
-            {
-                "NuclearBL": "nuclear",
-                "CoalBL": "coal",
-                "WindBL": "wind",
-                "SolarP": "solar",
-                "OtherBL": "other",
-            }.get(activity, ""),
-        )
-        for activity in result.index
-    ]
-    result["JRC_CO2_group_share"] = co2_shares.index.map(
-        lambda activity: co2_group_shares.get(
-            next((g for g, pair in SPLIT_GROUPS.items() if activity in pair),
-                 result.loc[activity, "JRC_group"]),
-            0.0,
-        )
-    )
-    result["JRC_fuel_input_share"] = nonco2_shares.index.map(
-        lambda activity: fuel_input_group_shares.get(
-            next((g for g, pair in SPLIT_GROUPS.items() if activity in pair),
-                 result.loc[activity, "JRC_group"]),
-            0.0,
-        )
-    )
+
+    result["JRC_group"] = pd.Series(activity_groups)
+
+    # Broad JRC EmissionBalance CO2 shares before base/peak splitting.
+    result["JRC_CO2_group_share"] = result["JRC_group"].map(
+        co2_group_shares
+    ).fillna(0.0)
+
+    # GTAP-derived non-CO2 shares, already at activity level.
+    result["GTAP_nonCO2_share"] = nonco2_shares
+
     result["CO2_share"] = co2_shares
     result["nonCO2_share"] = nonco2_shares
+
+    # Allocate OECD AEA totals.
     result["CO2_tonnes"] = result["CO2_share"] * co2_total
     result["nonCO2_tCO2e"] = result["nonCO2_share"] * nonco2_total
-    result["GHG_tCO2e"] = result["CO2_tonnes"] + result["nonCO2_tCO2e"]
+    result["GHG_tCO2e"] = (
+        result["CO2_tonnes"] + result["nonCO2_tCO2e"]
+    )
+
     result["AEA_CO2_total_tonnes"] = co2_total
     result["AEA_nonCO2_total_tCO2e"] = nonco2_total
-    result["JRC_CO2_total_PowerGen_kt"] = jrc_co2_powergen_total
-    result["JRC_CO2_total_EmissionBalance_kt"] = jrc_co2_balance_total
 
-    if not np.isclose(result["CO2_tonnes"].sum(), co2_total, rtol=1e-9, atol=1e-6):
-        raise AssertionError("Allocated CO2 does not conserve the OECD AEA total.")
-    if not np.isclose(result["nonCO2_tCO2e"].sum(), nonco2_total, rtol=1e-9, atol=1e-6):
-        raise AssertionError("Allocated non-CO2 does not conserve the OECD AEA total.")
+    result["JRC_CO2_total_EmissionBalance_kt"] = co2_group_total
+
+    # ---------------------------------------------------------
+    # 5. Check that allocated emissions conserve OECD AEA totals
+    # ---------------------------------------------------------
+    if not np.isclose(
+        result["CO2_tonnes"].sum(),
+        co2_total,
+        rtol=1e-9,
+        atol=1e-6,
+    ):
+        raise AssertionError(
+            "Allocated CO2 does not conserve the OECD AEA total."
+        )
+
+    if not np.isclose(
+        result["nonCO2_tCO2e"].sum(),
+        nonco2_total,
+        rtol=1e-9,
+        atol=1e-6,
+    ):
+        raise AssertionError(
+            "Allocated non-CO2 does not conserve the OECD AEA total."
+        )
+
     return result.reset_index()
+

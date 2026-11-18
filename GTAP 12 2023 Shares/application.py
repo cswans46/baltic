@@ -53,12 +53,12 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--jrc_powergen_pattern",
-        default="*PowerGen*.xlsx",
+        default="JRC-IDEES-2023_PowerGen_*.xlsx",
         help="Filename pattern for the country-specific JRC-IDEES PowerGen workbook.",
     )
     parser.add_argument(
         "--jrc_emission_balance_pattern",
-        default="*EmissionBalance*.xlsx",
+        default="JRC-IDEES-2023_EmissionBalance_*.xlsx",
         help="Filename pattern for the country-specific JRC-IDEES EmissionBalance workbook.",
     )
     parser.add_argument(
@@ -302,8 +302,9 @@ def disaggregate_electricity(
     # Sectors without a share (no GTAP electricity purchases) get the mix.
     no_share = list(R.columns[R.isna().any()])
     if no_share:
-        print(f"{country}: using economy-wide mix for sectors: {no_share}")    for c in no_share:
-        R[c] = mix
+        print(f"{country}: using economy-wide mix for sectors: {no_share}")    
+        for c in no_share:
+            R[c] = mix
 
     def col_weights(code):
         """Share of technology t in the purchases of input `code` (sums to 1)."""
@@ -398,8 +399,17 @@ RAS_SENSITIVITIES = {
 }
 
 
-def _ras_balance(seed, row_targets, col_targets, country,
-                 mode, blend=0.0, max_iter=5000, tol=1e-9):
+
+def _ras_balance(
+    seed,
+    row_targets,
+    col_targets,
+    country,
+    mode,
+    blend=0.0,
+    max_iter=5000,
+    tol=1e-9,
+):
     """
     Balance a signed IO matrix.
 
@@ -407,16 +417,54 @@ def _ras_balance(seed, row_targets, col_targets, country,
     The nonnegative transactions are balanced to the residual row
     and column targets.
 
-    blend controls the proportional seed sensitivity:
-        0.00 = original allocation
-        0.10 = 10% proportional seed
-        0.25 = 25% proportional seed
+    Parameters
+    ----------
+    seed : array-like
+        Initial transaction matrix.
+    row_targets, col_targets : array-like
+        Required row and column totals.
+    country, mode : str
+        Identifiers used in diagnostic messages.
+    blend : float
+        Proportional seed sensitivity:
+            0.00 = original allocation
+            0.10 = 10% proportional seed
+            0.25 = 25% proportional seed.
+        Negative cells are excluded from the proportional seed.
+    max_iter : int
+        Maximum number of RAS iterations.
+    tol : float
+        Convergence tolerance.
 
-    Negative cells are excluded from the proportional seed.
+    Returns
+    -------
+    balanced : ndarray
+        Balanced signed transaction matrix.
+    history : dict
+        Row and column margin errors by iteration.
+    iterations : int
+        Number of iterations performed.
+    final_error : float
+        Maximum absolute deviation from the target margins.
     """
+
     seed = np.asarray(seed, dtype=float).copy()
     row_targets = np.asarray(row_targets, dtype=float).copy()
     col_targets = np.asarray(col_targets, dtype=float).copy()
+
+    # ---------------------------------------------------------
+    # 1. Validate inputs.
+    # ---------------------------------------------------------
+    if seed.ndim != 2:
+        raise ValueError(f"{country}: {mode} RAS seed must be a 2D matrix.")
+
+    if seed.shape != (len(row_targets), len(col_targets)):
+        raise ValueError(
+            f"{country}: {mode} RAS dimensions do not match targets. "
+            f"Seed shape: {seed.shape}; "
+            f"row targets: {len(row_targets)}; "
+            f"column targets: {len(col_targets)}."
+        )
 
     if not 0.0 <= blend <= 1.0:
         raise ValueError(
@@ -432,8 +480,14 @@ def _ras_balance(seed, row_targets, col_targets, country,
     ):
         raise ValueError(f"{country}: RAS targets contain non-finite values.")
 
+    if np.any(row_targets < -tol) or np.any(col_targets < -tol):
+        raise ValueError(f"{country}: {mode} RAS targets contain negative values.")
+
+    row_targets = np.maximum(row_targets, 0.0)
+    col_targets = np.maximum(col_targets, 0.0)
+
     # ---------------------------------------------------------
-    # 1. Reconcile the original row and column grand totals.
+    # 2. Reconcile the original row and column grand totals.
     # ---------------------------------------------------------
     row_total = row_targets.sum()
     col_total = col_targets.sum()
@@ -443,10 +497,11 @@ def _ras_balance(seed, row_targets, col_targets, country,
             f"{country}: {mode} RAS has a non-positive grand total."
         )
 
+    # Preserve row targets and proportionally reconcile column targets.
     col_targets *= row_total / col_total
 
     # ---------------------------------------------------------
-    # 2. Separate negative and nonnegative transactions.
+    # 3. Separate negative and nonnegative transactions.
     # ---------------------------------------------------------
     negative = np.minimum(seed, 0.0)
     positive_seed = np.maximum(seed, 0.0)
@@ -500,7 +555,7 @@ def _ras_balance(seed, row_targets, col_targets, country,
         )
 
     # ---------------------------------------------------------
-    # 3. Construct the proportional seed sensitivity.
+    # 4. Construct the proportional seed sensitivity.
     # ---------------------------------------------------------
     # Do not introduce positive transactions into cells that
     # originally contained negative transactions.
@@ -519,16 +574,18 @@ def _ras_balance(seed, row_targets, col_targets, country,
     )
 
     # ---------------------------------------------------------
-    # 4. Check whether positive targets have seed support.
+    # 5. Check whether positive targets have seed support.
     # ---------------------------------------------------------
     unsupported_rows = [
-        i for i in range(len(positive_row_targets))
+        i
+        for i in range(len(positive_row_targets))
         if positive_row_targets[i] > tol
         and positive_seed[i, :].sum() <= tol
     ]
 
     unsupported_cols = [
-        j for j in range(len(positive_col_targets))
+        j
+        for j in range(len(positive_col_targets))
         if positive_col_targets[j] > tol
         and positive_seed[:, j].sum() <= tol
     ]
@@ -542,16 +599,19 @@ def _ras_balance(seed, row_targets, col_targets, country,
         )
 
     # ---------------------------------------------------------
-    # 5. Iterative proportional fitting.
+    # 6. Iterative proportional fitting.
     # ---------------------------------------------------------
     history = {
         "Row margins": [],
         "Column margins": [],
     }
 
+    converged = False
+
     for it in range(max_iter):
 
-        # Row adjustment.        row_sums = positive_seed.sum(axis=1)
+        # Row adjustment.
+        row_sums = positive_seed.sum(axis=1)
 
         row_factors = np.divide(
             positive_row_targets,
@@ -576,11 +636,15 @@ def _ras_balance(seed, row_targets, col_targets, country,
 
         # Convergence checks.
         row_error = np.max(
-            np.abs(positive_seed.sum(axis=1) - positive_row_targets)
+            np.abs(
+                positive_seed.sum(axis=1) - positive_row_targets
+            )
         )
 
         col_error = np.max(
-            np.abs(positive_seed.sum(axis=0) - positive_col_targets)
+            np.abs(
+                positive_seed.sum(axis=0) - positive_col_targets
+            )
         )
 
         history["Row margins"].append(row_error)
@@ -589,21 +653,18 @@ def _ras_balance(seed, row_targets, col_targets, country,
         error = max(row_error, col_error)
 
         if error < tol:
+            converged = True
             break
 
-    error = max(
-        history["Row margins"][-1],
-        history["Column margins"][-1],
-    )
-
-    if error > 1e-6:
-        print(
-            f"{country}: WARNING {mode} RAS did not converge "
-            f"(final max error {error:.2e})."
+    if not converged:
+        raise RuntimeError(
+            f"{country}: {mode} RAS did not converge after "
+            f"{max_iter} iterations. "
+            f"Final maximum margin error: {error:.2e}."
         )
 
     # ---------------------------------------------------------
-    # 6. Restore the original negative transactions.
+    # 7. Restore the original negative transactions.
     # ---------------------------------------------------------
     balanced = positive_seed + negative
 
@@ -619,9 +680,9 @@ def _ras_balance(seed, row_targets, col_targets, country,
     final_error = max(final_row_error, final_col_error)
 
     if final_error > 1e-6:
-        print(
-            f"{country}: WARNING {mode} signed margins differ "
-            f"from targets (final max error {final_error:.2e})."
+        raise RuntimeError(
+            f"{country}: {mode} RAS signed margins differ "
+            f"from targets. Final maximum error: {final_error:.2e}."
         )
 
     return balanced, history, it + 1, final_error
@@ -1286,15 +1347,24 @@ def main(args=None):
         emission_balance_workbook = find_country_workbook(
             root, country, parsed_args.jrc_emission_balance_pattern
         )
+        
+        
+        
         aea_workbook = find_country_workbook(
             root, country, parsed_args.aea_emissions_pattern.format(country=country)
         )
+        project_root = Path(__file__).resolve().parent
+
+        co2_gdx = (project_root / parsed_args.co2_gdx).resolve()
+        nonco2_gdx = (project_root / parsed_args.nonco2_gdx).resolve()
+
         co2_gtap, nonco2_gtap = load_gtap_emissions_weights(
-            Path(parsed_args.co2_gdx),
-            Path(parsed_args.nonco2_gdx),
+            co2_gdx,
+            nonco2_gdx,
             country_code,
             system_directory=parsed_args.gams_system_directory,
         )
+        
         jrc_output_shares = build_jrc_output_shares(
             powergen_workbook,
             country_code,
