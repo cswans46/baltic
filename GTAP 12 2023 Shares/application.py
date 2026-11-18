@@ -1286,6 +1286,10 @@ def main(args=None):
             raw_levels,
             year=2023,
         )
+        output_shares_path = output_dir / f"{country_code}2023_JRC_generation_shares.csv"
+        jrc_output_shares.rename("output_share").to_csv(output_shares_path, header=True)
+        print(f"{country}: saved JRC generation output shares: {output_shares_path}")
+
         emissions_allocation = allocate_oecd_aea_emissions(
             powergen_workbook,
             aea_workbook,
