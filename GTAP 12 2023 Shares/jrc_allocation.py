@@ -176,6 +176,81 @@ def load_jrc_generation_groups(
     return result
 
 
+def load_jrc_co2_emission_groups(
+    powergen_workbook: Path,
+    year: int = 2023,
+    country_code: str = "EST",
+) -> pd.Series:
+    """
+    Read JRC-IDEES fossil CO2 emissions for power and heat generation.
+
+    Uses all conventional thermal power plants (electricity-only + CHP) from
+    Thermal and heat-only plants from DistHeat. Biomass CO2 is excluded,
+    consistent with the OECD AEA greenhouse-gas account used here.
+    """
+    if country_code not in JRC_ISO2:
+        raise KeyError(f"Unsupported GTAP country code: {country_code}")
+    iso2 = JRC_ISO2[country_code]
+
+    thermal = pd.read_excel(powergen_workbook, sheet_name="Thermal", header=None)
+    distheat = pd.read_excel(powergen_workbook, sheet_name="DistHeat", header=None)
+    thermal_values = _jrc_code_values(thermal, year)
+    heat_values = _jrc_code_values(distheat, year)
+
+    thermal_prefix = f"Emi.ktCO2.{iso2}.PG.ConvThermal.All."
+    heat_prefix = f"Emi.ktCO2.{iso2}.DH.ConvThermal."
+    thermal_emissions = {
+        code[len(thermal_prefix):]: value
+        for code, value in thermal_values.items()
+        if code.startswith(thermal_prefix)
+    }
+    heat_emissions = {
+        code[len(heat_prefix):]: value
+        for code, value in heat_values.items()
+        if code.startswith(heat_prefix)
+    }
+
+    groups = {
+        "coal": (
+            thermal_emissions.get("Coal", 0.0)
+            + thermal_emissions.get("Lignite", 0.0)
+            + heat_emissions.get("EFCoal", 0.0)
+            + heat_emissions.get("EFLignite", 0.0)
+        ),
+        "gas": (
+            thermal_emissions.get("Gas", 0.0)
+            + thermal_emissions.get("Biogas.EFBiogas", 0.0)
+            + thermal_emissions.get("DerivedGas.EFDerivedGas", 0.0)
+            + thermal_emissions.get("RefineryGas.EFRefineryGas", 0.0)
+            + heat_emissions.get("EFGas", 0.0)
+            + heat_emissions.get("EFDerivedGas", 0.0)
+            + heat_emissions.get("EFRefineryGas", 0.0)
+        ),
+        "oil": (
+            thermal_emissions.get("Diesel", 0.0)
+            + thermal_emissions.get("FuelOil", 0.0)
+            + heat_emissions.get("EFDiesel", 0.0)
+            + heat_emissions.get("EFFuelOil", 0.0)
+        ),
+        # JRC reports zero CO2 for biomass; retain only fossil/non-renewable
+        # waste emissions in the GTAP OtherBL category.
+        "other": (
+            thermal_emissions.get("Waste", 0.0)
+            + heat_emissions.get("EFWasteNR", 0.0)
+        ),
+        "wind": 0.0,
+        "solar": 0.0,
+        "hydro": 0.0,
+        "nuclear": 0.0,
+    }
+    result = pd.Series(groups, dtype=float)
+    if not np.isfinite(result.to_numpy()).all() or (result < 0).any():
+        raise ValueError(f"Invalid JRC CO2 emissions in {powergen_workbook}.")
+    if result.sum() <= 0:
+        raise ValueError(f"No positive JRC CO2 emissions found for {year}.")
+    return result
+
+
 def _split_group_shares(
     group_shares: pd.Series,
     split_values: pd.Series,
@@ -434,13 +509,20 @@ def allocate_oecd_aea_emissions(
     GTAP GDX emissions determine only the base/peak split within gas, oil and
     hydro. CO2 and non-CO2 use their respective GTAP emission accounts.
     """
-    groups = load_jrc_generation_groups(
+    # CO2 allocation uses JRC's fuel-specific fossil CO2 emissions from
+    # power plants and heat-only plants. Non-CO2 allocation uses JRC combined
+    # electricity + heat generation by fuel as the activity proxy.
+    co2_groups = load_jrc_co2_emission_groups(
+        powergen_workbook, year, country_code
+    )
+    co2_group_shares = co2_groups / co2_groups.sum()
+    generation_groups = load_jrc_generation_groups(
         powergen_workbook, year, country_code, include_heat=True
     )
-    group_shares = groups / groups.sum()
+    generation_group_shares = generation_groups / generation_groups.sum()
 
-    co2_shares = _split_group_shares(group_shares, co2_gtap_totals)
-    nonco2_shares = _split_group_shares(group_shares, nonco2_gtap_totals)
+    co2_shares = _split_group_shares(co2_group_shares, co2_gtap_totals)
+    nonco2_shares = _split_group_shares(generation_group_shares, nonco2_gtap_totals)
     co2_total, nonco2_total = load_oecd_aea_d35_emissions(aea_workbook)
 
     result = pd.DataFrame(index=GTAP_GENERATING_ACTIVITIES)
@@ -458,13 +540,18 @@ def allocate_oecd_aea_emissions(
         )
         for activity in result.index
     ]
-    result["JRC_generation_share"] = co2_shares.index.map(
-        lambda activity: (
-            group_shares.get(
-                next((g for g, pair in SPLIT_GROUPS.items() if activity in pair),
-                     result.loc[activity, "JRC_group"]),
-                0.0,
-            )
+    result["JRC_CO2_group_share"] = co2_shares.index.map(
+        lambda activity: co2_group_shares.get(
+            next((g for g, pair in SPLIT_GROUPS.items() if activity in pair),
+                 result.loc[activity, "JRC_group"]),
+            0.0,
+        )
+    )
+    result["JRC_generation_share"] = nonco2_shares.index.map(
+        lambda activity: generation_group_shares.get(
+            next((g for g, pair in SPLIT_GROUPS.items() if activity in pair),
+                 result.loc[activity, "JRC_group"]),
+            0.0,
         )
     )
     result["CO2_share"] = co2_shares
