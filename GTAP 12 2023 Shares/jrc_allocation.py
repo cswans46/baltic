@@ -251,6 +251,63 @@ def load_jrc_co2_emission_groups(
     return result
 
 
+def load_jrc_emission_balance_co2_total(
+    emission_balance_workbook: Path,
+    year: int = 2023,
+) -> float:
+    """Read the JRC EmissionBalance TI_EHG_E total CO2 emissions (kt CO2)."""
+    frame = pd.read_excel(
+        emission_balance_workbook, sheet_name="TI_EHG_E", header=None
+    )
+    year_col = _year_column(frame, year)
+    matches = frame.loc[
+        frame.iloc[:, 0].astype(str).str.strip().str.lower().eq("total")
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one 'Total' row in TI_EHG_E of {emission_balance_workbook}; "
+            f"found {len(matches)}."
+        )
+    value = pd.to_numeric(
+        pd.Series([matches.iloc[0, year_col]]), errors="coerce"
+    ).iloc[0]
+    if pd.isna(value) or value < 0:
+        raise ValueError(
+            f"Invalid TI_EHG_E CO2 total for {year} in {emission_balance_workbook}."
+        )
+    return float(value)
+
+
+def validate_jrc_co2_emissions(
+    powergen_workbook: Path,
+    emission_balance_workbook: Path,
+    year: int = 2023,
+    country_code: str = "EST",
+    tolerance_kt: float = 0.5,
+) -> tuple[float, float]:
+    """
+    Cross-check PowerGen fuel-specific thermal + heat-only CO2 against
+    EmissionBalance's aggregate TI_EHG_E CO2 total.
+    """
+    powergen_total = float(
+        load_jrc_co2_emission_groups(
+            powergen_workbook, year, country_code
+        ).sum()
+    )
+    balance_total = load_jrc_emission_balance_co2_total(
+        emission_balance_workbook, year
+    )
+    difference = powergen_total - balance_total
+    if abs(difference) > tolerance_kt:
+        raise ValueError(
+            f"JRC CO2 cross-check failed for {country_code} {year}: "
+            f"PowerGen={powergen_total:.6f} kt, "
+            f"EmissionBalance={balance_total:.6f} kt, "
+            f"difference={difference:.6f} kt."
+        )
+    return powergen_total, balance_total
+
+
 def _split_group_shares(
     group_shares: pd.Series,
     split_values: pd.Series,
@@ -499,6 +556,7 @@ def allocate_oecd_aea_emissions(
     aea_workbook: Path,
     co2_gtap_totals: pd.Series,
     nonco2_gtap_totals: pd.Series,
+    emission_balance_workbook: Path | None = None,
     year: int = 2023,
     country_code: str = "EST",
 ) -> pd.DataFrame:
@@ -520,6 +578,16 @@ def allocate_oecd_aea_emissions(
         powergen_workbook, year, country_code, include_heat=True
     )
     generation_group_shares = generation_groups / generation_groups.sum()
+
+    jrc_co2_powergen_total = np.nan
+    jrc_co2_balance_total = np.nan
+    if emission_balance_workbook is not None:
+        jrc_co2_powergen_total, jrc_co2_balance_total = validate_jrc_co2_emissions(
+            powergen_workbook,
+            emission_balance_workbook,
+            year=year,
+            country_code=country_code,
+        )
 
     co2_shares = _split_group_shares(co2_group_shares, co2_gtap_totals)
     nonco2_shares = _split_group_shares(generation_group_shares, nonco2_gtap_totals)
@@ -561,6 +629,8 @@ def allocate_oecd_aea_emissions(
     result["GHG_tCO2e"] = result["CO2_tonnes"] + result["nonCO2_tCO2e"]
     result["AEA_CO2_total_tonnes"] = co2_total
     result["AEA_nonCO2_total_tCO2e"] = nonco2_total
+    result["JRC_CO2_total_PowerGen_kt"] = jrc_co2_powergen_total
+    result["JRC_CO2_total_EmissionBalance_kt"] = jrc_co2_balance_total
 
     if not np.isclose(result["CO2_tonnes"].sum(), co2_total, rtol=1e-9, atol=1e-6):
         raise AssertionError("Allocated CO2 does not conserve the OECD AEA total.")
