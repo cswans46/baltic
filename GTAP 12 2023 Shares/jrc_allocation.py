@@ -384,7 +384,7 @@ def _gams_symbol_activity_totals(
                     gas = keys[0]
                     if gas.upper() == "CO2":
                         continue
-                    # Black carbon, carbon monoxide do not have a standard AR5/ar5 100-year GWP.
+                    # Gases without a matching AR5 GWP are excluded.
                     gwp = gwp_ar5.get(gas.upper())
                     if gwp is None:
                         continue
@@ -405,7 +405,7 @@ def _load_gwp_ar5(
     country_code: str,
     system_directory: str,
 ) -> dict[str, float]:
-    """Load country-specific GWP values, using AR5 for Latvia and ar5 otherwise."""
+    """Load country-specific GWP values for the AR5 assessment."""
     from gams import GamsWorkspace
 
     workspace = GamsWorkspace(system_directory=system_directory)
@@ -451,7 +451,8 @@ def load_gtap_emissions_weights(
 
     CO2 uses MDF and MMF (domestic/imported fuel combustion accounts).
     Non-CO2 uses EMI_IO, excludes CO2, and converts remaining gases to
-    CO2-equivalent using country-specific ar5 GWP records.
+    CO2-equivalent using country-specific AR5 GWP records. Both accounts
+    retain the 11 electricity activities plus GDT for emissions allocation.
     """
     co2 = _gams_symbol_activity_totals(
         co2_gdx, ["MDF", "MMF"], country_code, system_directory,
