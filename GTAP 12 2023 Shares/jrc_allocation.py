@@ -245,21 +245,21 @@ def load_jrc_emission_balance_co2_groups(
             f"{emission_balance_workbook}."
         )
 
-    # Check that the selected fossil/non-biogenic categories reconcile to
-    # the sheet total after excluding the renewable/biofuel aggregate.
-    if "TOTAL" not in values or "RA000" not in values:
+    # The fuel-code parent rows partition the CO2 total on these
+    # disaggregated generation sheets. RA000 is not a CO2 subtotal to
+    # subtract here; it is an energy/fuel aggregate and can exceed TOTAL.
+    if "TOTAL" not in values:
         raise KeyError(
-            f"{sheet_name} must contain TOTAL and RA000 rows in "
+            f"{sheet_name} must contain a TOTAL row in "
             f"{emission_balance_workbook}."
         )
-    expected = values["TOTAL"] - values["RA000"]
-    if expected < -1e-8 or not np.isclose(
-        groups.sum(), max(expected, 0.0), rtol=1e-8, atol=1e-5
+    expected = values["TOTAL"]
+    if not np.isclose(
+        groups.sum(), expected, rtol=1e-8, atol=1e-5
     ):
         raise ValueError(
             f"{sheet_name} fuel groups do not reconcile for {year}: "
-            f"groups={groups.sum():.6f} kt, "
-            f"TOTAL less renewables={expected:.6f} kt."
+            f"groups={groups.sum():.6f} kt, TOTAL={expected:.6f} kt."
         )
     return groups
 
