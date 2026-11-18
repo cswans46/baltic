@@ -543,7 +543,7 @@ def load_gtap_emissions_weights(
     co2_gdx: Path,
     nonco2_gdx: Path,
     country_code: str,
-    system_directory: str = r"C:\\GAMS\\51",
+    system_directory: str = r"C:\GAMS\51",
 ) -> tuple[pd.Series, pd.Series]:
     """
     Return GTAP activity emission totals for CO2 and non-CO2.
