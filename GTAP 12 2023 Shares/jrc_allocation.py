@@ -88,6 +88,7 @@ def _jrc_code_values(frame: pd.DataFrame, year: int) -> dict[str, float]:
 def load_jrc_generation_groups(
     powergen_workbook: Path,
     year: int = 2023,
+    country_code: str = "EST",
 ) -> pd.Series:
     """
     Read net electricity generation from JRC-IDEES PowerGen.
@@ -104,7 +105,10 @@ def load_jrc_generation_groups(
     thermal_values = _jrc_code_values(thermal, year)
     overview_values = _jrc_code_values(overview, year)
 
-    thermal_prefix = "GenNetElc.GWh.EE.PG.ConvThermal.All."
+    if country_code not in JRC_ISO2:
+        raise KeyError(f"Unsupported GTAP country code: {country_code}")
+    iso2 = JRC_ISO2[country_code]
+    thermal_prefix = f"GenNetElc.GWh.{iso2}.PG.ConvThermal.All."
     fuel_values = {
         code[len(thermal_prefix):]: value
         for code, value in thermal_values.items()
@@ -119,13 +123,13 @@ def load_jrc_generation_groups(
         "gas": fuel("Gas", "Biogas", "DerivedGas", "RefineryGas"),
         "oil": fuel("Diesel", "FuelOil"),
         "other": fuel("BiomassWaste", "Waste"),
-        "wind": overview_values.get("GenNetElc.GWh.EE.PG.Wind", 0.0),
+        "wind": overview_values.get("GenNetElc.GWh.{iso2}.PG.Wind", 0.0),
         "solar": (
-            overview_values.get("GenNetElc.GWh.EE.PG.SolarPV", 0.0)
-            + overview_values.get("GenNetElc.GWh.EE.PG.SolarThermal", 0.0)
+            overview_values.get("GenNetElc.GWh.{iso2}.PG.SolarPV", 0.0)
+            + overview_values.get("GenNetElc.GWh.{iso2}.PG.SolarThermal", 0.0)
         ),
-        "hydro": overview_values.get("GenNetElc.GWh.EE.PG.Hydro", 0.0),
-        "nuclear": overview_values.get("GenNetElc.GWh.EE.PG.Nuclear", 0.0),
+        "hydro": overview_values.get("GenNetElc.GWh.{iso2}.PG.Hydro", 0.0),
+        "nuclear": overview_values.get("GenNetElc.GWh.{iso2}.PG.Nuclear", 0.0),
     }
     result = pd.Series(groups, dtype=float)
     if not np.isfinite(result.to_numpy()).all() or (result < 0).any():
@@ -206,7 +210,7 @@ def build_jrc_output_shares(
     year: int = 2023,
 ) -> pd.Series:
     """Create 11 GTAP output shares using JRC generation and GTAP pair splits."""
-    groups = load_jrc_generation_groups(powergen_workbook, year)
+    groups = load_jrc_generation_groups(powergen_workbook, year, country_code)
     group_shares = groups / groups.sum()
     split_values = gtap_output_weights(raw_gtap_levels, country_code)
     return _split_group_shares(group_shares, split_values)
@@ -355,6 +359,7 @@ def allocate_oecd_aea_emissions(
     co2_gtap_totals: pd.Series,
     nonco2_gtap_totals: pd.Series,
     year: int = 2023,
+    country_code: str = "EST",
 ) -> pd.DataFrame:
     """
     Allocate OECD AEA D35 emissions to 11 GTAP generating activities.
@@ -363,7 +368,7 @@ def allocate_oecd_aea_emissions(
     GTAP GDX emissions determine only the base/peak split within gas, oil and
     hydro. CO2 and non-CO2 use their respective GTAP emission accounts.
     """
-    groups = load_jrc_generation_groups(powergen_workbook, year)
+    groups = load_jrc_generation_groups(powergen_workbook, year, country_code)
     group_shares = groups / groups.sum()
 
     co2_shares = _split_group_shares(group_shares, co2_gtap_totals)
