@@ -13,6 +13,12 @@ from import_shares import (
 )
 
 from shares_gams import ACTIVITIES, FACTOR_INPUTS, main as calculate_shares
+from jrc_allocation import (
+    allocate_oecd_aea_emissions,
+    build_jrc_output_shares,
+    find_country_workbook,
+    load_gtap_emissions_weights,
+)
 
 COUNTRY_CODES = {
     "Latvia": "LVA",
@@ -43,6 +49,31 @@ def parse_args(args=None):
         action="store_true",
         help="Omit technologies with no activity in a country (default: keep all 13 "
              "as labels, with all-zero rows/columns where inactive).",
+    )
+    parser.add_argument(
+        "--jrc_powergen_pattern",
+        default="*PowerGen*.xlsx",
+        help="Filename pattern for the country-specific JRC-IDEES PowerGen workbook.",
+    )
+    parser.add_argument(
+        "--aea_emissions_pattern",
+        default="OECD {country} 2022 emissions.xlsx",
+        help="Filename pattern for the country-specific OECD AEA workbook.",
+    )
+    parser.add_argument(
+        "--co2_gdx",
+        default=r"..\\GDX12aPower23\\GSDFEMISS.GDX",
+        help="GTAP CO2 emissions GDX file.",
+    )
+    parser.add_argument(
+        "--nonco2_gdx",
+        default=r"..\\GDX12aPower23\\GSDFNCO2.GDX",
+        help="GTAP non-CO2 emissions GDX file.",
+    )
+    parser.add_argument(
+        "--gams_system_directory",
+        default=r"C:\\GAMS\\51",
+        help="GAMS system directory used to read GTAP GDX files.",
     )
 
     return parser.parse_args(args=args)
@@ -193,8 +224,10 @@ def add_import_alternatives(
 
     return io_eia, io_gtap
 
-def disaggregate_electricity(io, country, row_frames, level_frames, raw_frames,
-                             drop_inactive=False):
+def disaggregate_electricity(
+    io, country, row_frames, level_frames, raw_frames,
+    drop_inactive=False, jrc_output_shares=None,
+):
     """
     Split aggregate electricity (DOM_D row, D column) into one sector per
     GTAP electricity activity.
@@ -231,7 +264,17 @@ def disaggregate_electricity(io, country, row_frames, level_frames, raw_frames,
     # ---- Supply-side mix ----------------------------------------------------
     R = R.reindex(columns=sector_cols)
     mix = R.mul(dom[sector_cols], axis=1).sum(axis=1)
-    mix = mix / mix.sum()                       # economy-wide technology mix
+    mix = mix / mix.sum()                       # GTAP economy-wide fallback mix
+
+    # JRC-IDEES net generation shares provide an independent 2023 allocation
+    # for final demand and fallback cells. Purchaser-specific intermediate
+    # supply shares (R) remain based on GTAP VDFB data.
+    if jrc_output_shares is not None:
+        jrc_mix = pd.Series(0.0, index=ACTIVITIES, dtype=float)
+        jrc_mix.loc[jrc_output_shares.index] = jrc_output_shares.astype(float)
+        if (jrc_mix < 0).any() or not np.isclose(jrc_mix.sum(), 1.0, atol=1e-9):
+            raise ValueError(f"{country}: JRC output shares must be non-negative and sum to one.")
+        mix = jrc_mix
 
     # ---- Which technologies to keep ------------------------------------------
     active = (L.sum() + E.sum() > 0) | (mix > 0)
@@ -247,8 +290,7 @@ def disaggregate_electricity(io, country, row_frames, level_frames, raw_frames,
     # Sectors without a share (no GTAP electricity purchases) get the mix.
     no_share = list(R.columns[R.isna().any()])
     if no_share:
-        print(f"{country}: using economy-wide mix for sectors: {no_share}")
-    for c in no_share:
+        print(f"{country}: using economy-wide mix for sectors: {no_share}")    for c in no_share:
         R[c] = mix
 
     def col_weights(code):
@@ -497,8 +539,7 @@ def _ras_balance(seed, row_targets, col_targets, country,
 
     for it in range(max_iter):
 
-        # Row adjustment.
-        row_sums = positive_seed.sum(axis=1)
+        # Row adjustment.        row_sums = positive_seed.sum(axis=1)
 
         row_factors = np.divide(
             positive_row_targets,
@@ -747,8 +788,7 @@ def compare_ras_cells(
     print(f"Total cells compared: {len(all_cells):,}")
     print(f"Cells changed: {len(changed_cells):,}")
     print(
-        f"Maximum absolute cell change: "
-        f"{all_cells['absolute_change'].abs().max():.10g}"
+        f"Maximum absolute cell change: "        f"{all_cells['absolute_change'].abs().max():.10g}"
     )
 
     return {
@@ -998,7 +1038,6 @@ def RAS(matrix, country, mode="intermediate", blend=0.0,
         .sum(axis=1)
         .to_numpy()
     )
-
     # Check the margins actually imposed by RAS.
     row_check = out.loc[balance_rows, balance_cols].sum(axis=1).to_numpy()
     col_check = out.loc[balance_rows, balance_cols].sum(axis=0).to_numpy()
@@ -1226,6 +1265,39 @@ def main(args=None):
         print(f"{country}: domestic electricity disaggregation")
         print(f"{'=' * 70}")
 
+        # Load the country-specific JRC-IDEES generation data and GTAP
+        # emissions accounts. The JRC generation mix is used for the 2023
+        # output allocation; GTAP emissions distinguish base/peak activities.
+        powergen_workbook = find_country_workbook(
+            root, country, parsed_args.jrc_powergen_pattern
+        )
+        aea_workbook = find_country_workbook(
+            root, country, parsed_args.aea_emissions_pattern.format(country=country)
+        )
+        co2_gtap, nonco2_gtap = load_gtap_emissions_weights(
+            Path(parsed_args.co2_gdx),
+            Path(parsed_args.nonco2_gdx),
+            country_code,
+            system_directory=parsed_args.gams_system_directory,
+        )
+        jrc_output_shares = build_jrc_output_shares(
+            powergen_workbook,
+            country_code,
+            raw_levels,
+            year=2023,
+        )
+        emissions_allocation = allocate_oecd_aea_emissions(
+            powergen_workbook,
+            aea_workbook,
+            co2_gtap,
+            nonco2_gtap,
+            year=2023,
+            country_code=country_code,
+        )
+        emissions_path = output_dir / f"{country_code}2023_AEA_D35_GTAP_emissions.csv"
+        emissions_allocation.to_csv(emissions_path, index=False)
+        print(f"{country}: saved AEA electricity/heat emissions allocation: {emissions_path}")
+
         # First disaggregate domestic electricity.
         # IMP_D remains available at this stage.
         io_domestic = disaggregate_electricity(
@@ -1235,6 +1307,7 @@ def main(args=None):
             oecd_levels,
             raw_levels,
             drop_inactive=parsed_args.drop_inactive,
+            jrc_output_shares=jrc_output_shares,
         )
 
         # Convert the OECD-level VMFB results into the format
@@ -1297,8 +1370,7 @@ def main(args=None):
                         out_dir=output_dir,
                     )
                     
-                    cell_comparison = compare_ras_cells(
-                        matrix,
+                    cell_comparison = compare_ras_cells(                        matrix,
                         balanced,
                         label,
                         output_dir,
