@@ -4,6 +4,9 @@ import sys
 from argparse import ArgumentParser
 import gams.transfer as gt
 from pathlib import Path
+from projection import project_and_rebalance, project_emissions
+from price_model import run_price_scenarios
+from ras_core import _ras_balance
 
 from mapping import GTAP_TO_OECD, OECD_NAMES
 
