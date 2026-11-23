@@ -13,6 +13,8 @@ from import_shares import (
 )
 
 from shares_gams import ACTIVITIES, FACTOR_INPUTS, main as calculate_shares
+from ras_core import _ras_balance
+from run_projection import run_projection
 from jrc_allocation import (
     allocate_oecd_aea_emissions,
     build_jrc_output_shares,
@@ -84,8 +86,11 @@ def parse_args(args=None):
     parser.add_argument("--skip_projection", action="store_true",
                         help="Skip the 2022 -> 2030 BAU projection and second RAS.")
     parser.add_argument("--emissions_file", default=None,
-                        help="CSV of the 2022 environmental extension; expects "
-                             "<stem>_<EST|LVA|LTU>.csv per country.")
+                        help="Optional CSV with the 2022 emissions of the NON-electricity "
+                             "sectors (rows = CO2 / nonCO2 / GHG in the same units as the "
+                             "D35 allocation, columns = IO sector codes); expects "
+                             "<stem>_<EST|LVA|LTU>.csv per country. Electricity and heat "
+                             "emissions are read from <code>2023_AEA_D35_GTAP_emissions.csv.")
     parser.add_argument("--household_column", default="HFCE",
                         help="Final-demand column holding household consumption.")
 
@@ -1150,11 +1155,9 @@ def main(args=None):
     # 4. Run both RAS modes and all sensitivity specifications.
     # ---------------------------------------------------------
     rebalanced_data = {}
-    ras_settings = {}
 
     for country, alternatives in alternatives_data.items():
         rebalanced_data[country] = {}
-        ras_settings[country] = {}
 
         for alternative, matrix in alternatives.items():
 
@@ -1202,7 +1205,6 @@ def main(args=None):
                     key = f"{alternative}_{mode}_{sensitivity}"
 
                     rebalanced_data[country][key] = balanced
-                    ras_settings[country][key] = (mode, blend)
 
     # ---------------------------------------------------------
     # 5. Export the final rebalanced alternatives.
@@ -1225,44 +1227,17 @@ def main(args=None):
     #    with RAS (same mode / blend as the 2022 balancing).
     #    Runs AFTER the initial disaggregated table is balanced.
     # ---------------------------------------------------------
-    projected_data = {}
     if not parsed_args.skip_projection:
-        for country, alternatives in rebalanced_data.items():
-            country_code = COUNTRY_CODES[country]
-            projected_data[country] = {}
-
-            for key, matrix in alternatives.items():
-                mode, blend = ras_settings[country][key]
-                label = f"{country} - {key} - 2030 BAU"
-                print(f"\n{'=' * 70}\n{label}: projection and RAS\n{'=' * 70}")
-
-                projected, _ = project_and_rebalance(
-                    matrix, label, country_code, mode=mode, blend=blend,
-                )
-                projected_data[country][key] = projected
-                projected.to_csv(
-                    output_dir / f"{country_code}{parsed_args.year}_"
-                                 f"{key.lower()}_disaggregated_2030BAU.csv"
-                )
-
-                if parsed_args.emissions_file:
-                    stem = Path(parsed_args.emissions_file)
-                    ext_path = stem.with_name(f"{stem.stem}_{country_code}{stem.suffix}")
-                    extension = pd.read_csv(ext_path, index_col=0)
-                    emissions_2030, growth = project_emissions(extension, matrix, projected)
-                    emissions_2030.to_csv(
-                        output_dir / f"{country_code}{parsed_args.year}_"
-                                     f"{key.lower()}_emissions_2030BAU.csv"
-                    )
-
-                # Price model on the 2022 and projected tables.
-                for tag, table in (("2022", matrix), ("2030BAU", projected)):
-                    _, summary = run_price_scenarios(
-                        table, country_code, hh_col=parsed_args.household_column
-                    )
-                    summary.to_csv(
-                        output_dir / f"{country_code}_{key.lower()}_price_model_{tag}.csv"
-                    )
+        run_projection(
+            rebalanced_data,
+            COUNTRY_CODES,
+            parsed_args.year,
+            output_dir,
+            ras_balance=_ras_balance,
+            ras_sensitivities=RAS_SENSITIVITIES,
+            household_column=parsed_args.household_column,
+            emissions_file=parsed_args.emissions_file,
+        )
 
     return rebalanced_data
 

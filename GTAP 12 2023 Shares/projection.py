@@ -30,7 +30,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ras_core import _ras_balance
 from growth import growth_factor
 
 ACCOUNT_ROWS = ("TTL_INT_FNL", "OUTPUT")
@@ -63,15 +62,27 @@ def growth_vectors(matrix: pd.DataFrame, country_code: str):
     activities = _activities()
     _, industry_cols, fd_cols = table_layout(matrix)
 
-    g_col = pd.Series(
-        {c: growth_factor(c, country_code, activities) for c in industry_cols}
-    )
+    unmapped = []
+
+    def lookup(label):
+        try:
+            return growth_factor(label, country_code, activities)
+        except KeyError:
+            unmapped.append(label)
+            return np.nan
+
+    g_col = pd.Series({c: lookup(c) for c in industry_cols})
     g_row = pd.Series(np.nan, index=matrix.index, dtype=float)
     for r in matrix.index:
         if r in ACCOUNT_ROWS or r in NON_SECTOR_ROWS:
             continue
         if r.startswith(("DOM_", "IMP_")):
-            g_row[r] = growth_factor(r.split("_", 1)[1], country_code, activities)
+            g_row[r] = lookup(r.split("_", 1)[1])
+    if unmapped:
+        raise KeyError(
+            "No Table C1 growth factor for these sector labels: "
+            f"{sorted(set(unmapped))}. Add them to growth.TABLE_C1 / growth.ALIASES."
+        )
     return g_col, g_row, fd_cols
 
 
@@ -105,10 +116,16 @@ def _closing_message(name, s):
     print(f"    {name} closing factor = {s:.5f}{flag}")
 
 
-def project_and_rebalance(matrix, country, country_code, mode="full",
+def project_and_rebalance(matrix, country, country_code, ras_balance, mode="full",
                           blend=0.0, max_iter=5000, tol=1e-9):
     """
     Project an already-balanced disaggregated table to 2030 and rebalance with RAS.
+
+    ras_balance : the repository's `_ras_balance` (application.py), passed in so
+                  this module always uses whichever version the project runs.
+                  Called as ras_balance(seed=, row_targets=, col_targets=,
+                  country=, mode=, blend=, max_iter=, tol=) and must return
+                  (balanced, history, iterations, error).
     `mode` and `blend` should match those used for the 2022 balancing.
     """
     if mode not in ("intermediate", "full"):
@@ -160,7 +177,7 @@ def project_and_rebalance(matrix, country, country_code, mode="full",
         col_targets[n:] *= s
         _closing_message("final-demand columns", s)
 
-    balanced, history, iterations, error = _ras_balance(
+    balanced, history, iterations, error = ras_balance(
         seed=seed, row_targets=row_targets, col_targets=col_targets,
         country=country, mode=mode, blend=blend, max_iter=max_iter, tol=tol,
     )
