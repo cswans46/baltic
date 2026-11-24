@@ -93,6 +93,30 @@ def parse_args(args=None):
                              "emissions are read from <code>2023_AEA_D35_GTAP_emissions.csv.")
     parser.add_argument("--household_column", default="HFCE",
                         help="Final-demand column holding household consumption.")
+    parser.add_argument(
+        "--ras_modes",
+        default="full",
+        help="Space-separated RAS modes to run: 'full', 'intermediate' or both "
+             "(default: full).",
+    )
+    parser.add_argument(
+        "--ras_sensitivities",
+        default="baseline",
+        help="Space-separated RAS sensitivities to run, from "
+             "baseline / sensitivity_10pct / sensitivity_25pct (default: baseline).",
+    )
+    parser.add_argument(
+        "--import_alternatives",
+        default="preferred",
+        help="Import-allocation alternative(s) to keep: 'preferred' (EIA where an EIA "
+             "workbook exists, otherwise GTAP), 'EIA', 'GTAP' or 'all' (default: preferred).",
+    )
+    parser.add_argument(
+        "--keep_diagnostics",
+        action="store_true",
+        help="Also write the unbalanced import-alternative CSVs, JRC generation shares, "
+             "RAS convergence plots and before/after RAS comparison files.",
+    )
 
     return parser.parse_args(args=args)
 
@@ -178,6 +202,7 @@ def add_import_alternatives(
     output_folder,
     vmfb_import_shares,
     purchaser_to_eia=None,
+    save_outputs=True,
 ):
     """
     Add the available import-allocation alternatives to an already
@@ -228,17 +253,18 @@ def add_import_alternatives(
         total_column="TOTAL",
     )
 
-    paths = save_import_alternatives(
-        io_eia=io_eia,
-        io_gtap=io_gtap,
-        output_folder=output_folder,
-        country_code=country_code,
-        year=year,
-    )
+    if save_outputs:
+        paths = save_import_alternatives(
+            io_eia=io_eia,
+            io_gtap=io_gtap,
+            output_folder=output_folder,
+            country_code=country_code,
+            year=year,
+        )
 
-    print(f"{country}: saved import alternatives:")
-    for method, path in paths.items():
-        print(f"  {method}: {path}")
+        print(f"{country}: saved import alternatives:")
+        for method, path in paths.items():
+            print(f"  {method}: {path}")
 
     return io_eia, io_gtap
 
@@ -1015,6 +1041,86 @@ def compare_ras(before, after, country, out_dir=None, top_n=15, tol=1e-3):
 
 FD_COLS_EXCLUDE = None  # final demand = columns with no matching DOM_ row
 
+def select_import_alternatives(available, choice):
+    """
+    Keep the requested import-allocation alternative(s).
+
+    available : {"GTAP": table, "EIA": table (only if an EIA workbook exists)}
+    choice    : 'preferred' (EIA when available, else GTAP), 'EIA', 'GTAP' or 'all'.
+    """
+    wanted = choice.strip().lower()
+    if wanted == "all":
+        return dict(available)
+    if wanted == "preferred":
+        name = "EIA" if "EIA" in available else "GTAP"
+        return {name: available[name]}
+    for name in available:
+        if name.lower() == wanted:
+            return {name: available[name]}
+    raise ValueError(
+        f"Import alternative {choice!r} is not available here "
+        f"(available: {sorted(available)}). Use 'preferred' or 'all'."
+    )
+
+
+def rebalance_alternatives(alternatives_data, modes, sensitivities, output_dir,
+                           diagnostics=False):
+    """
+    Step 4: run RAS for each country / alternative / mode / sensitivity.
+
+    modes           : iterable of 'intermediate' / 'full'
+    sensitivities   : {name: blend}, a subset of RAS_SENSITIVITIES
+    diagnostics     : if True, also write convergence plots and the
+                      before/after comparison files.
+    Returns {country: {"<alternative>_<mode>_<sensitivity>": balanced table}}.
+    """
+    rebalanced_data = {}
+
+    for country, alternatives in alternatives_data.items():
+        rebalanced_data[country] = {}
+
+        for alternative, matrix in alternatives.items():
+            for mode in modes:
+                for sensitivity, blend in sensitivities.items():
+                    label = f"{country} - {alternative} - {mode} - {sensitivity}"
+
+                    print(f"\n{'=' * 70}")
+                    print(f"{label}: RAS")
+                    print(f"{'=' * 70}")
+
+                    balanced = RAS(
+                        matrix,
+                        label,
+                        mode=mode,
+                        blend=blend,
+                        out_dir=output_dir if diagnostics else None,
+                    )
+
+                    if diagnostics:
+                        compare_ras_cells(matrix, balanced, label, output_dir)
+                        compare_ras(matrix, balanced, label, out_dir=output_dir)
+                        diagnose_ras(matrix, balanced, label, out_dir=output_dir)
+
+                    key = f"{alternative}_{mode}_{sensitivity}"
+                    rebalanced_data[country][key] = balanced
+
+    return rebalanced_data
+
+
+def _parse_ras_choices(parsed_args):
+    modes = parsed_args.ras_modes.split()
+    bad_modes = [m for m in modes if m not in ("intermediate", "full")]
+    if not modes or bad_modes:
+        raise ValueError(f"--ras_modes must be 'full' and/or 'intermediate'; got {modes}.")
+    names = parsed_args.ras_sensitivities.split()
+    bad = [n for n in names if n not in RAS_SENSITIVITIES]
+    if not names or bad:
+        raise ValueError(
+            f"--ras_sensitivities must be from {list(RAS_SENSITIVITIES)}; got {names}."
+        )
+    return modes, {n: RAS_SENSITIVITIES[n] for n in names}
+
+
 def main(args=None):
     parsed_args = parse_args(args)
 
@@ -1023,6 +1129,7 @@ def main(args=None):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     countries = parsed_args.countries_to_share.split()
+    ras_modes, ras_sensitivities = _parse_ras_choices(parsed_args)
 
     # ---------------------------------------------------------
     # 1. Read the OECD domestic IO tables.
@@ -1093,9 +1200,10 @@ def main(args=None):
             raw_levels,
             year=2023,
         )
-        output_shares_path = output_dir / f"{country_code}2023_JRC_generation_shares.csv"
-        jrc_output_shares.rename("output_share").to_csv(output_shares_path, header=True)
-        print(f"{country}: saved JRC generation output shares: {output_shares_path}")
+        if parsed_args.keep_diagnostics:
+            output_shares_path = output_dir / f"{country_code}2023_JRC_generation_shares.csv"
+            jrc_output_shares.rename("output_share").to_csv(output_shares_path, header=True)
+            print(f"{country}: saved JRC generation output shares: {output_shares_path}")
 
         emissions_allocation = allocate_oecd_aea_emissions(
             powergen_workbook,
@@ -1141,70 +1249,30 @@ def main(args=None):
             root=root,
             output_folder=output_dir,
             vmfb_import_shares=vmfb_import_shares,
+            save_outputs=parsed_args.keep_diagnostics,
         )
 
-        # Only add alternatives that were actually generated.
-        alternatives_data[country] = {
-            "GTAP": io_gtap,
-        }
-
+        # Only alternatives that were actually generated are available;
+        # keep the one(s) requested with --import_alternatives.
+        available = {"GTAP": io_gtap}
         if io_eia is not None:
-            alternatives_data[country]["EIA"] = io_eia
+            available["EIA"] = io_eia
+        alternatives_data[country] = select_import_alternatives(
+            available, parsed_args.import_alternatives
+        )
+        print(f"{country}: keeping import alternative(s): {list(alternatives_data[country])}")
 
     # ---------------------------------------------------------
-    # 4. Run both RAS modes and all sensitivity specifications.
+    # 4. RAS for the selected modes and sensitivities
+    #    (default: full RAS, baseline sensitivity).
     # ---------------------------------------------------------
-    rebalanced_data = {}
-
-    for country, alternatives in alternatives_data.items():
-        rebalanced_data[country] = {}
-
-        for alternative, matrix in alternatives.items():
-
-            for mode in ("intermediate", "full"):
-
-                for sensitivity, blend in RAS_SENSITIVITIES.items():
-
-                    label = (
-                        f"{country} - {alternative} - "
-                        f"{mode} - {sensitivity}"
-                    )
-
-                    print(f"\n{'=' * 70}")
-                    print(f"{label}: RAS")
-                    print(f"{'=' * 70}")
-
-                    balanced = RAS(
-                        matrix,
-                        label,
-                        mode=mode,
-                        blend=blend,
-                        out_dir=output_dir,
-                    )
-                    
-                    cell_comparison = compare_ras_cells(                        matrix,
-                        balanced,
-                        label,
-                        output_dir,
-                    )
-
-                    compare_ras(
-                        matrix,
-                        balanced,
-                        label,
-                        out_dir=output_dir,
-                    )
-
-                    diagnostics = diagnose_ras(
-                        matrix,
-                        balanced,
-                        label,
-                        out_dir=output_dir,
-                    )
-
-                    key = f"{alternative}_{mode}_{sensitivity}"
-
-                    rebalanced_data[country][key] = balanced
+    rebalanced_data = rebalance_alternatives(
+        alternatives_data,
+        ras_modes,
+        ras_sensitivities,
+        output_dir,
+        diagnostics=parsed_args.keep_diagnostics,
+    )
 
     # ---------------------------------------------------------
     # 5. Export the final rebalanced alternatives.

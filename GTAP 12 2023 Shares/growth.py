@@ -40,7 +40,7 @@ TABLE_C1 = {
     "C31T33": _MANUF,
     "D_GAS": (0.979, 1.104, 1.126),      # Gas, steam and air conditioning supply
     "D_ELEC": (1.460, 1.427, 1.553),     # Wind = Solar PV = Hydro = Other
-    "E": _MINING,                        # Water supply, sewerage, waste
+    "E": (0.979, 1.104, 1.126),          # Water supply, sewerage, waste (same as gas/steam row)
     "F": (0.895, 1.200, 1.416),          # Construction
     "G": _WHOLESALE,
     "H49": _TRANSPORT, "H50": _TRANSPORT, "H51": _TRANSPORT,

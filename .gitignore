@@ -15,6 +15,7 @@ __pycache__/
 *.pdf
 *.docx
 *.md
+!HOWTO.md
 # Superfluous .tex files
 *.aux
 *.log

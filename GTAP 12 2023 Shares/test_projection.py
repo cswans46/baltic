@@ -4,7 +4,8 @@ import numpy as np, pandas as pd
 # gams is not installed in the sandbox; shares_gams only needs it at import time.
 gt = types.ModuleType("gams.transfer"); g = types.ModuleType("gams"); g.transfer = gt
 sys.modules["gams"] = g; sys.modules["gams.transfer"] = gt
-sys.path.insert(0, "/home/claude/cswans46/baltic/GTAP 12 2023 Shares")
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import projection as P
 from application import _ras_balance as _rb
@@ -66,6 +67,7 @@ for cc in ("EST", "LVA", "LTU"):
 
 # growth factors pulled from Table C1
 assert growth_factor("WindBL", "EST") == 1.460 and growth_factor("GDT", "LTU") == 1.126
+assert growth_factor("E", "EST") == 0.979 and growth_factor("E", "LVA") == 1.104   # Table C1 water supply
 assert growth_factor("C301", "LVA") == 1.060 and growth_factor("J62_63", "LTU") == 1.200
 print("growth factors OK")
 

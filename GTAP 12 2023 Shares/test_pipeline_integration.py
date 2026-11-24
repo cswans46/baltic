@@ -183,3 +183,55 @@ try:
 except KeyError as exc:
     assert "ZZ1" in str(exc)
 print("unmapped-label error OK")
+
+# ------------------------------------------------ 6. cleanup / selection options
+import tempfile
+from pathlib import Path
+
+args = app.parse_args([])
+assert (args.ras_modes, args.ras_sensitivities, args.import_alternatives) == ("full", "baseline", "preferred")
+assert args.keep_diagnostics is False
+modes, sens = app._parse_ras_choices(args)
+assert modes == ["full"] and sens == {"baseline": 0.0}
+for bad in (["--ras_modes", "fulll"], ["--ras_sensitivities", "baseline foo"]):
+    try:
+        app._parse_ras_choices(app.parse_args(bad))
+        raise SystemExit("expected ValueError")
+    except ValueError:
+        pass
+
+avail_lva = {"GTAP": gtap}
+avail_est = {"GTAP": gtap, "EIA": gtap.copy()}
+assert list(app.select_import_alternatives(avail_lva, "preferred")) == ["GTAP"]      # Latvia: GTAP only
+assert list(app.select_import_alternatives(avail_est, "preferred")) == ["EIA"]       # EST / LTU: EIA
+assert list(app.select_import_alternatives(avail_est, "all")) == ["GTAP", "EIA"]
+assert list(app.select_import_alternatives(avail_est, "gtap")) == ["GTAP"]
+try:
+    app.select_import_alternatives(avail_lva, "EIA")
+    raise SystemExit("expected ValueError")
+except ValueError:
+    pass
+
+with tempfile.TemporaryDirectory() as tmp:
+    sel = {"Latvia": app.select_import_alternatives(avail_lva, "preferred"),
+           "Estonia": app.select_import_alternatives(avail_est, "preferred")}
+    reb = app.rebalance_alternatives(sel, modes, sens, tmp, diagnostics=False)
+    assert {c: list(v) for c, v in reb.items()} == {"Latvia": ["GTAP_full_baseline"],
+                                                    "Estonia": ["EIA_full_baseline"]}
+    assert list(Path(tmp).iterdir()) == [], "no files expected without --keep_diagnostics"
+
+    out = run_projection(reb, {"Latvia": "LVA", "Estonia": "EST"}, "2022", tmp,
+                         ras_balance=app._ras_balance, ras_sensitivities=app.RAS_SENSITIVITIES)
+    names = sorted(p.name for p in Path(tmp).iterdir())
+    print(names)
+    assert names == sorted([
+        "EST2022_eia_full_baseline_disaggregated_2030BAU.csv",
+        "EST_eia_full_baseline_price_model_2022.csv", "EST_eia_full_baseline_price_model_2030BAU.csv",
+        "LVA2022_gtap_full_baseline_disaggregated_2030BAU.csv",
+        "LVA_gtap_full_baseline_price_model_2022.csv", "LVA_gtap_full_baseline_price_model_2030BAU.csv",
+    ])
+
+with tempfile.TemporaryDirectory() as tmp:       # diagnostics switch restores the extras
+    app.rebalance_alternatives({"Latvia": {"GTAP": gtap}}, modes, sens, tmp, diagnostics=True)
+    assert any(p.suffix == ".png" for p in Path(tmp).iterdir())
+print("cleanup options OK")
